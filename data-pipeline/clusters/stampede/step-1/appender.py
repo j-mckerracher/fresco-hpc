@@ -29,9 +29,9 @@ MAX_RETRIES = 5
 RETRY_DELAY_BASE = 2  # Base delay in seconds
 
 # Configure your folders (use raw strings for Windows paths)
-WATCH_FOLDER = r"C:\Users\jmckerra\Documents\Stampede\step-1-staging"
-PROCESSING_FOLDER = r"C:\Users\jmckerra\Documents\Stampede\processing"
-OUTPUT_FOLDER = r"C:\Users\jmckerra\Documents\Stampede\step-1-complete"
+WATCH_FOLDER = r"<LOCAL_PATH_PLACEHOLDER>\Documents\Stampede\step-1-staging"
+PROCESSING_FOLDER = r"<LOCAL_PATH_PLACEHOLDER>\Documents\Stampede\processing"
+OUTPUT_FOLDER = r"<LOCAL_PATH_PLACEHOLDER>\Documents\Stampede\step-1-complete"
 ERROR_FOLDER = ""
 
 

@@ -17,7 +17,7 @@ from collections import defaultdict  # Use defaultdict for easier aggregation
 BASE_URL = "https://www.datadepot.rcac.purdue.edu/sbagchi/fresco/repository/Stampede/TACC_Stats/"
 REQUIRED_FILES = ['block.csv', 'cpu.csv', 'llite.csv', 'mem.csv']
 TEMP_BASE_DIR = Path("./temp_stampede_downloads")
-FINAL_OUTPUT_DIR = Path("/home/dynamo/a/jmckerra/projects/stampede-step-1/output")
+FINAL_OUTPUT_DIR = Path("<LOCAL_PATH_PLACEHOLDER>/stampede-step-1/output")
 NODE_DIR_PATTERN = re.compile(r'^(NODE\d+)/$')
 NETWORK_RETRIES = 3
 NETWORK_WAIT_SECONDS = 3

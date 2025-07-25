@@ -17,7 +17,7 @@ import psutil
 from tqdm import tqdm
 
 # --- Configuration ---
-BASE_SHARED_PATH = Path("/home/dynamo/a/jmckerra/projects/stampede-step-2")
+BASE_SHARED_PATH = Path("<LOCAL_PATH_PLACEHOLDER>/projects/stampede-step-2")
 SERVER_INPUT_DIR = BASE_SHARED_PATH / "input"
 SERVER_OUTPUT_DIR = BASE_SHARED_PATH / "output"  # Intermediate results
 SERVER_COMPLETE_DIR = BASE_SHARED_PATH / "complete"  # Final results and status

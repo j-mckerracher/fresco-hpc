@@ -11,14 +11,14 @@ import traceback
 
 # --- Configuration ---
 # Source data directories
-SOURCE_DIR = Path(r"C:\Users\jmckerra\Documents\Stampede\step-1-complete-sorted")
-SOURCE_DIR_ACCOUNTING = Path(r"C:\Users\jmckerra\Documents\Stampede\accounting")
+SOURCE_DIR = Path(r"<LOCAL_PATH_PLACEHOLDER>\Documents\Stampede\step-1-complete-sorted")
+SOURCE_DIR_ACCOUNTING = Path(r"<LOCAL_PATH_PLACEHOLDER>\Documents\Stampede\accounting")
 
 # Shared directories with the Consumer
 SERVER_INPUT_DIR = Path(r"U:\projects\stampede-step-2\input")  # Sender writes manifests, accounting, metrics here
 SERVER_COMPLETE_DIR = Path(r"U:\projects\stampede-step-2\complete")  # Needed to check for processing jobs
 SERVER_OUTPUT_DIR = Path(r"U:\projects\stampede-step-2\output")  # Not strictly needed by sender, but kept for context
-DESTINATION_DIR = Path(r"C:\Users\jmckerra\Documents\Stampede\step-2-complete")  # Needed to check already completed
+DESTINATION_DIR = Path(r"<LOCAL_PATH_PLACEHOLDER>\Documents\Stampede\step-2-complete")  # Needed to check already completed
 
 # Local directories for the Sender
 LOGS_DIR = Path("logs_sender")  # Separate log dir for sender
