@@ -15,24 +15,31 @@
 4. Analysis 2 (Resource Waste): ~1.75 pages (22%)
 5. Conclusion & Future Work: ~1 page (12%)
 
-### 1. Introduction (~1 page / 12.5%)
-Hook: The growing demand for HPC across science and industry makes operational efficiency paramount. Every wasted CPU-hour or delayed computation represents a tangible cost.
+# 1. Introduction (~1 page / 12.5%)
 
-Problem Statement: Two obstacles to improving HPC efficiency are (a) the opacity of scheduling systems and (b) the difficulty for administrators in identifying systemic resource waste. These problems persist due to a scarcity of comprehensive, public data linking job requests, scheduling, and actual performance.
+**Hook:** High-Performance Computing systems represent billions of dollars in infrastructure investment, yet preliminary studies suggest that X-Y% of requested CPU cycles go unused while thousands of jobs queue for hours daily. This paradox—simultaneous resource scarcity and waste—undermines the scientific mission these systems were built to serve and represents a critical operational challenge as demand for computational resources continues to grow.
 
-Introducing the Solution (FRESCO): Briefly introduce the FRESCO dataset as the enabling resource for this study. Emphasize its unique combination of multi-institutional scale, long temporal range, and the crucial linkage of job accounting data with fine-grained performance metrics.
+**Problem Statement:** At least two fundamental obstacles prevent HPC systems from achieving their efficiency potential. First, the opacity of job scheduling systems forces users to make resource requests in the dark. Without visibility into queue priorities, wait time factors, or historical patterns, users resort to defensive over-requesting—asking for more cores, memory, or time than needed as insurance against delays and failures. This creates a tragedy of the commons where individual rational behavior degrades system-wide performance. Second, administrators lack the tools to systematically identify and address resource waste patterns. While egregious cases of underutilization may be obvious, subtle but widespread inefficiencies remain hidden, and there are few established methodologies for quantifying waste or correlating it with user behaviors and job characteristics.
 
-Research Questions (RQs):
-1. What are the primary drivers of queue wait time in large-scale HPC systems, and can these wait times be accurately predicted based on a job's requested parameters? 
-2. How prevalent and severe is resource waste (i.e., the over-requesting of resources), and do specific job characteristics or user behaviors correlate with higher levels of waste?
+These problems persist because comprehensive, public datasets linking job requests, scheduling decisions, and actual resource consumption have been scarce. Without such data, both users and administrators operate on intuition rather than evidence, perpetuating cycles of inefficiency that could otherwise be broken through data-driven insights.
 
-What to include:
-- Summary of Contributions: State clearly what we will deliver:
-  - A detailed characterization of the FRESCO dataset and its schema. 
-  - An in-depth analysis of queue wait times, culminating in a predictive model for job scheduling delays. 
-  - A novel methodology for quantifying and detecting resource waste from scheduler and performance logs. 
-  - Actionable recommendations for HPC users and administrators based on our findings. 
-- Roadmap: Briefly outline the structure of the rest of the paper.
+**Addressing the Gap with FRESCO:** The recently released FRESCO dataset provides an unprecedented opportunity to tackle these challenges systematically. FRESCO uniquely combines multi-institutional scale (20.9 million jobs across 75 months from three major academic computing centers), temporal depth, and—critically—the linkage of job accounting data with fine-grained performance metrics. This combination enables analyses that were previously extremely difficult: we can now examine not just what users requested, but what they actually used, and correlate both with waiting times and scheduling outcomes.
+
+**Research Questions:** Building on this foundation, we address two key questions that directly target the problems identified above:
+
+**RQ1:** What job characteristics drive queue wait times in large-scale HPC systems, and can we provide users with accurate wait time predictions to inform smarter resource requests and submission strategies?
+
+**RQ2:** How prevalent and severe is resource waste across different job types and user behaviors, and can we develop systematic approaches to detect and quantify underutilization patterns that administrators can act upon?
+
+Answering these questions has implications beyond operational efficiency. More effective HPC resource utilization can accelerate scientific discovery, reduce barriers to computational research for resource-constrained groups, and minimize the environmental impact of underutilized infrastructure.
+
+**Summary of Contributions:** This work delivers four key contributions:
+- A detailed characterization of the FRESCO dataset and its schema, establishing its value for HPC operational research
+- An in-depth analysis of queue wait times across multiple institutions, culminating in a predictive model that provides actionable insights for both users and administrators
+- A novel methodology for quantifying and detecting resource waste from scheduler and performance logs, with validated metrics that distinguish between different types of underutilization
+- Concrete, data-driven recommendations for HPC users seeking to optimize their resource requests and administrators aiming to improve system-wide efficiency
+
+**Roadmap:** The remainder of this paper is structured as follows. Section 2 provides background on HPC scheduling and situates our work within existing research. Section 3 introduces the FRESCO dataset and its multi-institutional scope, while Section 4 details the data schema and key metrics used in our analyses. Sections 5 and 6 present our wait time prediction and resource waste detection analyses, respectively. We conclude in Section 7 with a discussion of broader implications and future research directions.
 
 ### 2. Background and Related Work (~0.5 pages / 6.5%)
 HPC Scheduling and Resource Management: Briefly explain the role of schedulers (e.g., Slurm, PBS/TORQUE) and the concept of job queues.
