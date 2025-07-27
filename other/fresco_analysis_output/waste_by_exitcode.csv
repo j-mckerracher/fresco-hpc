@@ -1,0 +1,8 @@
+,composite_waste,composite_waste,composite_waste,composite_waste,cpu_waste,cpu_waste,mem_waste,mem_waste
+,count,mean,median,std,mean,median,mean,median
+job_exitcode,,,,,,,,
+CANCELLED,23286,0.3092,0.2632,0.2709,0.3892,0.2737,0.1891,0.0
+COMPLETED,77522,0.582,0.5872,0.2912,0.5794,0.6263,0.5859,0.8779
+FAILED,6852,0.663,0.71,0.2801,0.5285,0.5622,0.8647,0.9706
+NODE_FAIL,2697,0.2041,0.1298,0.2188,0.3048,0.2115,0.053,0.0
+TIMEOUT,84210,0.2022,0.0691,0.2583,0.2301,0.0449,0.1604,0.0

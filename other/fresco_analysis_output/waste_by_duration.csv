@@ -1,0 +1,7 @@
+,composite_waste,composite_waste,composite_waste,composite_waste,cpu_waste,cpu_waste,mem_waste,mem_waste
+,count,mean,median,std,mean,median,mean,median
+duration_category,,,,,,,,
+Short (<1h),23037,0.6319,0.5999,0.2692,0.7031,0.86,0.5252,0.7995
+Medium (1-8h),39675,0.6308,0.5999,0.2818,0.6772,0.8795,0.5612,0.8851
+Long (8-24h),37814,0.4693,0.4006,0.297,0.4107,0.3862,0.5571,0.8664
+Very Long (>24h),94041,0.1819,0.06,0.2314,0.2042,0.0415,0.1485,0.0
