@@ -130,7 +130,7 @@ class NodeDataProcessor:
             )
 
             return rate_df.select([
-                pl.col('jobID').str.replace_all('jobID', 'JOB', literal=True)  # Standardize prefix
+                pl.col('jobID').str.replace_all('jobID', 'JOB', literal=True)
                 .str.replace_all('job', 'JOB', literal=True).alias('Job Id'),
                 pl.col('node').alias('Host'),
                 pl.col('Timestamp'),
@@ -144,11 +144,15 @@ class NodeDataProcessor:
             return None
 
     def process_cpu_file(self, file_path: Path) -> Union[pl.DataFrame, None]:
-        logger.info(f"Processing CPU file for 'cpuuser' with high fidelity: {file_path}")
+        """
+        Processes CPU data using the corrected algorithm.
+        1. Calculates deltas for each individual CPU core.
+        2. Aggregates these deltas to the node level.
+        3. Computes CPU percentage from the aggregated deltas.
+        """
+        logger.info(f"Processing CPU file for 'cpuuser' with corrected algorithm: {file_path}")
         cpu_jiffy_columns = ['user', 'nice', 'system', 'idle', 'iowait', 'irq', 'softirq']
-        # Define expected columns for reading
         cpu_read_cols = ['jobID', 'node', 'timestamp', 'device'] + cpu_jiffy_columns
-        # Dtypes for robust parsing
         cpu_dtypes = {col: pl.Float64 for col in cpu_jiffy_columns}
         cpu_dtypes.update({'jobID': pl.Utf8, 'node': pl.Utf8, 'timestamp': pl.Utf8, 'device': pl.Utf8})
 
@@ -156,70 +160,73 @@ class NodeDataProcessor:
         if df is None: return None
 
         try:
-            # 1. Prepare data: Parse Timestamp, ensure numeric types
+            # 1. Prepare data: Parse Timestamp, ensure numeric types, and drop nulls
             df = df.with_columns([
-                pl.col(col).fill_null(0) for col in cpu_jiffy_columns  # Already float from dtypes
+                pl.col(col).fill_null(0) for col in cpu_jiffy_columns
             ]).with_columns(
                 pl.col('timestamp').str.strptime(pl.Datetime(time_unit="us"), "%m/%d/%Y %H:%M:%S", strict=False).alias(
                     'Timestamp_original')
             ).drop_nulls(subset=['Timestamp_original', 'jobID', 'node', 'device'])
 
-            # 2. Sum Core Jiffies to Node Level (per Original Timestamp)
-            logger.debug(f"Aggregating raw per-core jiffies to node level for {file_path.name}...")
-            node_level_jiffies = df.group_by(
-                ['jobID', 'node', 'Timestamp_original'], maintain_order=True
-            ).agg([
-                pl.sum(col).alias(col) for col in cpu_jiffy_columns
-                # Results in columns 'user', 'nice', etc. with summed values
-            ])
-
-            if node_level_jiffies.height == 0:
-                logger.warning(f"Node-level jiffy aggregation resulted in empty DataFrame for {file_path.name}.")
+            if df.height == 0:
+                logger.warning(f"No valid CPU data after initial cleaning for {file_path.name}")
                 return None
 
-            # 3. Calculate Deltas for Node-Level Jiffies
-            logger.debug(f"Calculating deltas for node-level jiffies for {file_path.name}...")
-            node_level_jiffies = node_level_jiffies.sort(['jobID', 'node', 'Timestamp_original'])
+            # 2. Calculate deltas AT THE CORE LEVEL first
+            logger.debug(f"Calculating per-core jiffy deltas for {file_path.name}...")
+            df = df.sort(['jobID', 'node', 'device', 'Timestamp_original'])  # Sort for correct diff
+            per_core_group_keys = ['jobID', 'node', 'device']
 
-            delta_col_exprs = []
-            for col in cpu_jiffy_columns:
-                delta_col_exprs.append(
-                    pl.col(col).diff().over(['jobID', 'node']).alias(f"{col}_node_delta")
-                )
-            node_level_jiffies = node_level_jiffies.with_columns(delta_col_exprs)
+            delta_col_exprs = [
+                pl.col(col).diff().over(per_core_group_keys).alias(f"{col}_core_delta")
+                for col in cpu_jiffy_columns
+            ]
+            df_with_deltas = df.with_columns(delta_col_exprs)
 
-            # 4. Calculate Total Jiffies Delta
-            delta_sum_expr = pl.sum_horizontal([pl.col(f"{col}_node_delta") for col in cpu_jiffy_columns])
-            node_level_jiffies = node_level_jiffies.with_columns(
-                delta_sum_expr.alias('total_jiffies_node_delta')
-            )
+            # 3. Filter for valid, non-negative deltas. A row is valid only if all jiffy deltas are >= 0.
+            delta_cols = [f"{col}_core_delta" for col in cpu_jiffy_columns]
+            non_negative_filter = pl.all_horizontal([pl.col(d_col) >= 0 for d_col in delta_cols])
 
-            # 5. Calculate `cpuuser` Percentage
-            node_level_jiffies = node_level_jiffies.with_columns(
-                validate_metric(  # Handles clip 0-100 and null fill
+            df_valid_deltas = df_with_deltas.filter(non_negative_filter).drop_nulls(subset=delta_cols)
+
+            if df_valid_deltas.height == 0:
+                logger.warning(f"No valid CPU core-level deltas found for {file_path.name}")
+                return None
+
+            # 4. Aggregate the VALID deltas to the node level
+            logger.debug(f"Aggregating core-level deltas to node level for {file_path.name}...")
+            node_level_agg_keys = ['jobID', 'node', 'Timestamp_original']
+            node_level_deltas = df_valid_deltas.group_by(node_level_agg_keys, maintain_order=True).agg([
+                pl.sum(f"{col}_core_delta").alias(f"{col}_node_delta") for col in cpu_jiffy_columns
+            ])
+
+            # 5. Calculate total node delta and the 'cpuuser' percentage
+            node_delta_cols = [f"{col}_node_delta" for col in cpu_jiffy_columns]
+            final_df = node_level_deltas.with_columns(
+                pl.sum_horizontal([pl.col(d_col) for d_col in node_delta_cols]).alias('total_jiffies_node_delta')
+            ).filter(
+                pl.col('total_jiffies_node_delta') > 0  # Filter out rows where total delta is zero
+            ).with_columns(
+                # FRESCO formula: CPU % = ((user + nice) / total_CPU_time) * 100
+                validate_metric(
                     safe_division(
-                        pl.col('user_node_delta'),  # 'user_node_delta' comes from the delta calculation
+                        (pl.col('user_node_delta') + pl.col('nice_node_delta')),
                         pl.col('total_jiffies_node_delta')
                     ) * 100,
                     min_val=0.0, max_val=100.0
                 ).alias('Value_cpuuser')
             )
 
-            # 6. Filter Invalid Deltas (where total_jiffies_node_delta is null or not positive)
-            final_df = node_level_jiffies.filter(
-                pl.col('total_jiffies_node_delta').is_not_null() & (pl.col('total_jiffies_node_delta') > 0)
-            )
-
             if final_df.height == 0:
-                logger.warning(f"No valid CPU data after delta calculation and filtering for {file_path.name}")
+                logger.warning(f"No valid CPU data after node-level aggregation for {file_path.name}")
                 return None
 
-            # 7. Transform to FRESCO schema
+            # 6. Transform to FRESCO schema
             return final_df.select([
                 pl.col('jobID').str.replace_all('jobID', 'JOB', literal=True)
                 .str.replace_all('job', 'JOB', literal=True).alias('Job Id'),
                 pl.col('node').alias('Host'),
-                pl.col('Timestamp_original').alias('Timestamp'),  # Use the original timestamp
+                pl.col('Timestamp_original').alias('Timestamp'),
                 pl.lit('cpuuser').alias('Event'),
                 pl.col('Value_cpuuser').alias('Value'),
                 pl.lit('CPU %').alias('Units')
@@ -250,16 +257,6 @@ class NodeDataProcessor:
                 (pl.col('read_bytes') + pl.col('write_bytes')).alias('total_bytes_node')
                 # Assuming these are already node totals or should be summed if multiple entries per timestamp
             ]).drop_nulls(subset=['Timestamp', 'jobID', 'node'])
-
-            # If llite can have multiple rows per (jobID, node, Timestamp) e.g. different mounts, sum them first.
-            # Based on typical llite data, it's often one aggregated line per node snapshot.
-            # If it *could* have multiple, uncomment and test this:
-            # group_keys_node_ts = ['jobID', 'node', 'Timestamp']
-            # node_aggregated_bytes = df.group_by(group_keys_node_ts, maintain_order=True).agg(
-            #     pl.sum('total_bytes_node').alias('sum_total_bytes_node')
-            # )
-            # df_to_diff = node_aggregated_bytes.sort(group_keys_node_ts) # Diff this
-            # col_to_diff = 'sum_total_bytes_node'
 
             # Assuming df is already effectively node-aggregated per timestamp after initial sum, or llite provides one row
             df_to_diff = df.sort(['jobID', 'node', 'Timestamp'])
@@ -397,15 +394,6 @@ class NodeDataProcessor:
                     elif result is None or (isinstance(result, pl.DataFrame) and result.height == 0):
                         logger.warning(f"Processed {metric_name} file, but no valid data rows were generated.")
 
-                    # Orchestrator script (stampede_etl_batched_daily_agg.py) handles deleting temp node files
-                    # So, NodeDataProcessor should not delete them here.
-                    # if file_path.exists():
-                    #     try:
-                    #         os.remove(file_path)
-                    #         logger.info(f"Removed processed source file: {file_path}")
-                    #     except OSError as e:
-                    #         logger.error(f"Failed to remove source file {file_path}: {e}")
-
                 except Exception as e:
                     logger.error(f"Critical error calling processing function for {metric_name} file {file_path}: {e}",
                                  exc_info=True)
@@ -417,16 +405,10 @@ class NodeDataProcessor:
                 logger.info(
                     f"Concatenating results from {len(all_processed_dfs)} processed DataFrame(s) for node {self.cache_dir.name}...")
                 final_result = pl.concat(all_processed_dfs,
-                                         how='vertical_relaxed')  # Use vertical_relaxed for differing schemas before
-                # final selection
+                                         how='vertical_relaxed')
                 if final_result.height == 0:
                     logger.warning(f"Concatenation for node {self.cache_dir.name} resulted in an empty DataFrame.")
                     return None
-
-                # Ensure standard FRESCO columns are present and correctly named before returning
-                # This is a good place for a final schema check if desired, though individual functions aim for it.
-                # Example: required_fresco_cols = ['Job Id', 'Host', 'Timestamp', 'Event', 'Value', 'Units']
-                # final_result = final_result.select(required_fresco_cols) # If strict schema adherence is needed here
 
                 logger.info(
                     f"Successfully combined data for node {self.cache_dir.name} into final DataFrame with {final_result.height} rows.")
