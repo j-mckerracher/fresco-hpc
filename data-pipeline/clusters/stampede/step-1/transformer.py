@@ -17,7 +17,8 @@ from collections import defaultdict  # Use defaultdict for easier aggregation
 BASE_URL = "https://www.datadepot.rcac.purdue.edu/sbagchi/fresco/repository/Stampede/TACC_Stats/"
 REQUIRED_FILES = ['block.csv', 'cpu.csv', 'llite.csv', 'mem.csv']
 TEMP_BASE_DIR = Path("./temp_stampede_downloads")
-FINAL_OUTPUT_DIR = Path("<LOCAL_PATH_PLACEHOLDER>/stampede-step-1/output")
+LOCAL_BASE_PATH = "/home/dynamo/a/jmckerra/projects"
+FINAL_OUTPUT_DIR = Path(f"{LOCAL_BASE_PATH}/stampede-step-1/output")
 NODE_DIR_PATTERN = re.compile(r'^(NODE\d+)/$')
 NETWORK_RETRIES = 3
 NETWORK_WAIT_SECONDS = 3
@@ -68,7 +69,7 @@ def get_node_urls(base_url: str) -> List[Tuple[str, str]]:
         if not html_content:
             return []
 
-        soup = BeautifulSoup(html_content, 'lxml')
+        soup = BeautifulSoup(html_content, 'html.parser')
         links = soup.find_all('a', href=True)
 
         for link in links:
@@ -101,7 +102,7 @@ def get_required_file_urls(node_url: str, required_files: List[str]) -> Optional
         if not html_content:
             return None
 
-        soup = BeautifulSoup(html_content, 'lxml')
+        soup = BeautifulSoup(html_content, 'html.parser')
         links = soup.find_all('a', href=True)
         found_files = set()
 

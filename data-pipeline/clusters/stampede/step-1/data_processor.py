@@ -293,67 +293,72 @@ class NodeDataProcessor:
             return None
 
     def process_memory_metrics(self, file_path: Path) -> Union[List[pl.DataFrame], None]:
-        logger.info(f"Processing memory file: {file_path}")
-        memory_cols_read = ['jobID', 'node', 'timestamp', 'MemTotal', 'MemFree', 'MemUsed', 'FilePages']
-        mem_dtypes = {col: pl.Float64 for col in ['MemTotal', 'MemFree', 'MemUsed', 'FilePages']}
+        logger.info(f"Processing memory file with corrected logic: {file_path}")
+        # Read only the necessary columns for calculation. Ignore the unreliable 'MemUsed'.
+        memory_cols_read = ['jobID', 'node', 'timestamp', 'MemTotal', 'MemFree', 'FilePages']
+        mem_dtypes = {col: pl.Float64 for col in ['MemTotal', 'MemFree', 'FilePages']}
         mem_dtypes.update({'jobID': pl.Utf8, 'node': pl.Utf8, 'timestamp': pl.Utf8})
 
         df = self._read_csv_robust(file_path, dtypes=mem_dtypes, schema_cols=memory_cols_read)
         if df is None: return None
 
         try:
+            # Ensure the columns needed for calculation exist.
+            if 'MemTotal' not in df.columns or 'MemFree' not in df.columns:
+                logger.error(f"Cannot process memory: MemTotal or MemFree column missing in {file_path}.")
+                return None
+
             df = df.with_columns([
-                pl.col(col).fill_null(0) for col in ['MemTotal', 'MemFree', 'MemUsed', 'FilePages'] if col in df.columns
-                # Already float
+                pl.col(col).fill_null(0) for col in ['MemTotal', 'MemFree', 'FilePages'] if col in df.columns
             ]).with_columns(
                 pl.col('timestamp').str.strptime(pl.Datetime(time_unit="us"), "%m/%d/%Y %H:%M:%S", strict=False).alias(
                     'Timestamp')
-            ).drop_nulls(subset=['Timestamp', 'jobID', 'node', 'MemUsed', 'FilePages'])  # MemUsed is directly available
+            ).drop_nulls(subset=['Timestamp', 'jobID', 'node'])
 
-            # Use MemUsed directly if available and valid, otherwise MemTotal - MemFree
-            # This sample logic assumes MemUsed is the primary source
-            if 'MemUsed' not in df.columns:
-                if 'MemTotal' in df.columns and 'MemFree' in df.columns:
-                    logger.info("MemUsed not found, calculating from MemTotal - MemFree for memory processing.")
-                    df = df.with_columns((pl.col('MemTotal') - pl.col('MemFree')).alias('MemUsed_calc'))
-                    mem_used_col = 'MemUsed_calc'
-                else:
-                    logger.error("Cannot determine used memory: MemUsed, MemTotal, or MemFree missing.")
-                    return None
-            else:
-                mem_used_col = 'MemUsed'
+            # 1. Always calculate used memory. This is the reliable method.
+            # 2. Clip at 0 to prevent negative values from bad data (e.g., MemFree > MemTotal).
+            df = df.with_columns(
+                (pl.col('MemTotal') - pl.col('MemFree')).clip(lower_bound=0).alias('MemUsed_calculated')
+            )
 
+            # 3. Perform calculations using the newly calculated 'MemUsed_calculated' column.
             df = df.with_columns([
-                (pl.col(mem_used_col) * BYTES_TO_GB).clip(lower_bound=0).alias('Value_memused'),
-                ((pl.col(mem_used_col) - pl.col('FilePages')) * BYTES_TO_GB).clip(lower_bound=0).alias(
-                    'Value_memused_minus_diskcache')
+                (pl.col('MemUsed_calculated') * BYTES_TO_GB).alias('Value_memused'),
             ])
 
+            all_dfs = []
+
             memused_df = df.select([
-                pl.col('jobID').str.replace_all('jobID', 'JOB', literal=True)
-                .str.replace_all('job', 'JOB', literal=True).alias('Job Id'),
+                pl.col('jobID').str.replace_all('jobID', 'JOB', literal=True).str.replace_all('job', 'JOB',
+                                                                                              literal=True).alias(
+                    'Job Id'),
                 pl.col('node').alias('Host'),
                 pl.col('Timestamp'),
                 pl.lit('memused').alias('Event'),
                 pl.col('Value_memused').alias('Value'),
                 pl.lit('GB').alias('Units')
-            ])
+            ]).drop_nulls('Value')
+            all_dfs.append(memused_df)
 
-            memused_nocache_df = df.select([
-                pl.col('jobID').str.replace_all('jobID', 'JOB', literal=True)
-                .str.replace_all('job', 'JOB', literal=True).alias('Job Id'),
-                pl.col('node').alias('Host'),
-                pl.col('Timestamp'),
-                pl.lit('memused_minus_diskcache').alias('Event'),
-                pl.col('Value_memused_minus_diskcache').alias('Value'),
-                pl.lit('GB').alias('Units')
-            ])
+            # Also correct the logic for memused_minus_diskcache
+            if 'FilePages' in df.columns:
+                df = df.with_columns([
+                    (pl.col('MemUsed_calculated') - pl.col('FilePages')).clip(lower_bound=0).alias(
+                        'MemUsed_minus_cache_calc')
+                ])
+                memused_nocache_df = df.select([
+                    pl.col('jobID').str.replace_all('jobID', 'JOB', literal=True).str.replace_all('job', 'JOB',
+                                                                                                  literal=True).alias(
+                        'Job Id'),
+                    pl.col('node').alias('Host'),
+                    pl.col('Timestamp'),
+                    pl.lit('memused_minus_diskcache').alias('Event'),
+                    (pl.col('MemUsed_minus_cache_calc') * BYTES_TO_GB).alias('Value'),
+                    pl.lit('GB').alias('Units')
+                ]).drop_nulls('Value')
+                all_dfs.append(memused_nocache_df)
 
-            # Filter out rows where Value might be null if calculation failed or inputs were bad
-            memused_df = memused_df.drop_nulls('Value')
-            memused_nocache_df = memused_nocache_df.drop_nulls('Value')
-
-            return [memused_df, memused_nocache_df]
+            return [df for df in all_dfs if df.height > 0]
 
         except Exception as e:
             logger.error(f"Error processing memory file {file_path}: {e}", exc_info=True)

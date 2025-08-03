@@ -52,7 +52,7 @@ def setup_logging():
             logging.StreamHandler()
         ]
     )
-    # Return logger instance
+    # Return logger instance -
     return logging.getLogger("MetricsSender")
 
 

@@ -17,7 +17,7 @@ import psutil
 from tqdm import tqdm
 
 # --- Configuration ---
-BASE_SHARED_PATH = Path("<LOCAL_PATH_PLACEHOLDER>/projects/stampede-step-2")
+BASE_SHARED_PATH = "/home/dynamo/a/jmckerra/projects"
 SERVER_INPUT_DIR = BASE_SHARED_PATH / "input"
 SERVER_OUTPUT_DIR = BASE_SHARED_PATH / "output"  # Intermediate results
 SERVER_COMPLETE_DIR = BASE_SHARED_PATH / "complete"  # Final results and status
@@ -293,11 +293,11 @@ def load_sorted_metric_data(sorted_metric_files: List[Path]) -> pl.LazyFrame:
 # --- Core Processing Logic ---
 # REVISED: Uses 'jid', calculates midpoint time, adds 'value_gpu', uses defined OUTPUT_COLUMNS
 def efficient_job_processing(
-        metrics_df: pl.DataFrame,  # Input is now collected DataFrame with 'jid'
-        accounting_df: pl.DataFrame,  # Input is now collected DataFrame with 'jid'
+        metrics_df: pl.DataFrame,
+        accounting_df: pl.DataFrame,
         output_base_dir: Path,
         year_month: str,
-        job_id_prefix: str  # Used for naming output files
+        job_id_prefix: str
 ) -> List[Path]:
     """
     Process job metrics and accounting data efficiently using normalized 'jid'.
@@ -322,13 +322,14 @@ def efficient_job_processing(
         logger.warning("Input dataframes are empty. No processing needed.")
         return []
 
-    # Optional: Pre-sort metrics for potentially faster filtering within jobs
-    # metrics_df = metrics_df.sort("jid", "Timestamp")
+    # Add time window column to metrics for grouping
+    metrics_df = metrics_df.with_columns(
+        pl.col("Timestamp").dt.truncate("1m").alias("time_window")
+    )
 
     # Determine batch size for accounting data processing
     num_cores = multiprocessing.cpu_count()
     target_batches = num_cores * 2
-    # Ensure batch_size is at least 1, use ceiling division
     batch_size = max(1, math.ceil(len(accounting_df) / target_batches))
     logger.info(f"Accounting batch size: {batch_size} (for {len(accounting_df)} records)")
 
@@ -354,13 +355,11 @@ def efficient_job_processing(
             continue
 
         # Pre-filter metrics for this batch's jobs and time window
-        # This is an optimization to reduce the search space for each job
         with timing(f"Batch {batch_num}: Initial metrics filtering"):
-            # Filter using the normalized 'jid'
             batch_metrics_df = metrics_df.filter(
                 pl.col("jid").is_in(list(batch_jids)) &
                 (pl.col("Timestamp") >= batch_min_start) &
-                (pl.col("Timestamp") < batch_max_end)  # Use exclusive end for consistency
+                (pl.col("Timestamp") < batch_max_end)
             )
 
         if batch_metrics_df.is_empty():
@@ -373,7 +372,6 @@ def efficient_job_processing(
         jobs_with_data_count = 0
 
         with timing(f"Batch {batch_num}: Job-level processing"):
-            # Iterate through accounting job records in the current batch
             for job_row in tqdm(batch_acc_df.iter_rows(named=True), total=len(batch_acc_df),
                                 desc=f"Batch {batch_num} Jobs", leave=False):
                 job_jid = job_row["jid"]
@@ -385,134 +383,80 @@ def efficient_job_processing(
                     logger.debug(f"Skipping job {job_jid} due to invalid time range: {start_time} - {end_time}")
                     continue
 
-                # Filter the pre-filtered batch metrics for THIS specific job's jid and exact time range
-                # No timing block here as it should be faster with pre-filtering
+                # Filter metrics for this specific job
                 job_metrics = batch_metrics_df.filter(
                     (pl.col("jid") == job_jid) &
                     (pl.col("Timestamp") >= start_time) &
-                    (pl.col("Timestamp") < end_time)  # Job end time is exclusive for intervals
+                    (pl.col("Timestamp") < end_time)
                 )
 
                 if job_metrics.is_empty():
-                    # logger.debug(f"No metrics found for job {job_jid} between {start_time} and {end_time}")
-                    continue  # No metrics for this job in its execution window
+                    continue
 
                 jobs_with_data_count += 1
 
-                # Get unique hosts FOR THIS JOB from its metrics
+                # Get unique hosts for this job
                 hosts = job_metrics["Host"].unique().to_list()
-                host_list_str = ",".join(sorted(filter(None, hosts)))  # Sorted list
+                host_list_str = ",".join(sorted(filter(None, hosts)))
 
-                # --- Time Chunking and Aggregation ---
-                current_interval_start = start_time
-                while current_interval_start < end_time:
-                    current_interval_end = min(current_interval_start + PROCESSING_CHUNK_DURATION, end_time)
+                # Group by job-host-time_window to create unique combinations
+                # This is the KEY CHANGE to match Script 1's approach
+                grouped_metrics = job_metrics.group_by(["jid", "Host", "time_window"]).agg([
+                    # Aggregate each event type
+                    pl.when(pl.col("Event") == "cpuuser")
+                    .then(pl.col("Value"))
+                    .mean()
+                    .alias("value_cpuuser"),
 
-                    # Calculate interval midpoint (as required by objective)
-                    # Ensure midpoint calculation works correctly even for microsecond precision
-                    time_diff_micros = int((current_interval_end - current_interval_start).total_seconds() * 1_000_000)
-                    interval_midpoint = current_interval_start + timedelta(microseconds=time_diff_micros // 2)
+                    pl.when(pl.col("Event") == "memused")
+                    .then(pl.col("Value"))
+                    .mean()
+                    .alias("value_memused"),
 
-                    # Filter metrics for the current time interval [start, end)
-                    interval_metrics = job_metrics.filter(
-                        (pl.col("Timestamp") >= current_interval_start) &
-                        (pl.col("Timestamp") < current_interval_end)  # Interval end is exclusive
-                    )
+                    pl.when(pl.col("Event") == "memused_minus_diskcache")
+                    .then(pl.col("Value"))
+                    .mean()
+                    .alias("value_memused_minus_diskcache"),
 
-                    if interval_metrics.is_empty():
-                        current_interval_start = current_interval_end  # Move to next interval
-                        continue
+                    pl.when(pl.col("Event") == "nfs")
+                    .then(pl.col("Value"))
+                    .mean()
+                    .alias("value_nfs"),
 
-                    # Aggregate metrics within the interval, grouped by Host and Event
-                    # This implicitly filters for hosts present in this interval
-                    aggregated_interval = interval_metrics.group_by(["Host", "Event"]).agg(
-                        pl.col("Value").mean().alias("avg_value")
-                    )
+                    pl.when(pl.col("Event") == "block")
+                    .then(pl.col("Value"))
+                    .mean()
+                    .alias("value_block"),
+                ])
 
-                    if aggregated_interval.is_empty():  # Should not happen if interval_metrics wasn't empty, but safe check
-                        current_interval_start = current_interval_end
-                        continue
-
-                    # Pivot the aggregated data to get Events as columns per Host
-                    try:
-                        pivoted_interval = aggregated_interval.pivot(
-                            index="Host",
-                            columns="Event",
-                            values="avg_value"
-                        )
-
-                        # Rename pivoted columns to match output spec ('value_*')
-                        # Only rename columns that actually exist after pivoting
-                        rename_dict = {}
-                        event_cols_present = pivoted_interval.columns[1:]  # Skip 'Host' column
-                        for event_type in ["cpuuser", "memused", "memused_minus_diskcache", "nfs", "block"]:
-                            if event_type in event_cols_present:
-                                rename_dict[event_type] = f"value_{event_type}"
-                        if rename_dict:
-                            pivoted_interval = pivoted_interval.rename(rename_dict)
-
-                        # Iterate through hosts that had data in this interval (rows in pivoted_interval)
-                        for host_row in pivoted_interval.iter_rows(named=True):
-                            host = host_row["Host"]
-                            if not host: continue  # Skip if host is null/empty
-
-                            # Construct the output row dictionary according to the objective
-                            output_row = {
-                                # Interval/Host specific fields
-                                "time": interval_midpoint,  # Use midpoint time
-                                "host": host,
-
-                                # Job constant fields from accounting_df
-                                "submit_time": job_row["submit"],
-                                "start_time": start_time,
-                                "end_time": end_time,
-                                "timelimit": job_row["walltime"],
-                                "nhosts": job_row["nnodes"],
-                                "ncores": job_row["ncpus"],
-                                "account": job_row["account"],
-                                "queue": job_row["queue"],
-                                "jid": job_jid,  # Use the normalized jid
-                                "jobname": job_row["jobname"],
-                                "exitcode": job_row["exit_status"],
-                                "username": job_row["user"],
-
-                                # Other fields
-                                "host_list": host_list_str,  # Comma-separated list of all hosts for the job
-
-                                # Aggregated metric values (use .get for safety, default to NaN)
-                                "value_cpuuser": host_row.get("value_cpuuser", np.nan),
-                                "value_memused": host_row.get("value_memused", np.nan),
-                                "value_memused_minus_diskcache": host_row.get("value_memused_minus_diskcache", np.nan),
-                                "value_nfs": host_row.get("value_nfs", np.nan),
-                                "value_block": host_row.get("value_block", np.nan),
-
-                                # value_gpu is specifically requested, set to NaN as we don't have input data
-                                "value_gpu": np.nan,
-                            }
-                            batch_results.append(output_row)
-
-                    except Exception as pivot_err:
-                        # Log error during pivoting/row creation for this interval
-                        logger.error(
-                            f"Error processing interval {current_interval_start} for job {job_jid}: {pivot_err}",
-                            exc_info=True)
-                        # Attempt to log available events if possible
-                        try:
-                            events_in_interval = aggregated_interval['Event'].unique().to_list()
-                            logger.debug(f"Events present during failed pivot: {events_in_interval}")
-                        except:
-                            logger.debug("Could not retrieve events during pivot error.")
-                        # Continue to the next interval
-
-                    # Move to the next interval
-                    current_interval_start = current_interval_end
-
-                # --- Memory Check (Optional but good practice) ---
-                # Check memory periodically within the batch loop if processing many small jobs
-                # This example keeps the check less frequent (e.g., end of job iteration)
-                # Consider adding a check here if jobs are extremely long running
-
-        # --- End of Job Loop for the Batch ---
+                # Process each unique job-host-time combination
+                for row in grouped_metrics.iter_rows(named=True):
+                    # Use the time_window as the time (matches Script 1's approach)
+                    output_row = {
+                        "time": row["time_window"],
+                        "host": row["Host"],
+                        "submit_time": job_row["submit"],
+                        "start_time": start_time,
+                        "end_time": end_time,
+                        "timelimit": job_row["walltime"],
+                        "nhosts": job_row["nnodes"],
+                        "ncores": job_row["ncpus"],
+                        "account": job_row["account"],
+                        "queue": job_row["queue"],
+                        "jid": job_jid,
+                        "jobname": job_row["jobname"],
+                        "exitcode": job_row["exit_status"],
+                        "username": job_row["user"],
+                        "host_list": host_list_str,
+                        "value_cpuuser": row["value_cpuuser"] if row["value_cpuuser"] is not None else np.nan,
+                        "value_memused": row["value_memused"] if row["value_memused"] is not None else np.nan,
+                        "value_memused_minus_diskcache": row["value_memused_minus_diskcache"] if row[
+                                                                                                     "value_memused_minus_diskcache"] is not None else np.nan,
+                        "value_nfs": row["value_nfs"] if row["value_nfs"] is not None else np.nan,
+                        "value_block": row["value_block"] if row["value_block"] is not None else np.nan,
+                        "value_gpu": np.nan,  # Not available in the data
+                    }
+                    batch_results.append(output_row)
 
         # Write batch results if any were generated
         if batch_results:
@@ -521,27 +465,27 @@ def efficient_job_processing(
                     # Create DataFrame from the list of dictionaries
                     final_batch_df = pl.DataFrame(batch_results)
 
-                    # Ensure columns are in the specified order and add missing ones as null
-                    # This also handles the case where some value_* columns might be missing entirely if
-                    # those events never occurred in the batch.
+                    # Add a single unit column (matching Script 1's approach)
+                    # Script 1 uses "mixed" as the unit value
+                    final_batch_df = final_batch_df.with_columns(
+                        pl.lit("mixed").alias("unit")
+                    )
+
+                    # Ensure columns are in the specified order
                     cols_to_select = []
                     for col_name in OUTPUT_COLUMNS:
                         if col_name in final_batch_df.columns:
                             cols_to_select.append(pl.col(col_name))
                         else:
-                            # If a column is missing entirely (e.g., value_nfs never appeared)
-                            # add it as a literal null column with the correct type (Float64 for values)
-                            col_type = pl.Float64 if col_name.startswith(
-                                "value_") else pl.Utf8  # Adjust types as needed
-                            logger.warning(
-                                f"Column '{col_name}' not found in batch {batch_num} results, adding as null ({col_type}).")
-                            # Handle specific types if needed (e.g., Int64 for counts, Datetime for times)
+                            # Add missing columns as null with appropriate type
                             if col_name in ["submit_time", "start_time", "end_time", "time"]:
                                 col_type = pl.Datetime
-                            elif col_name in ["nhosts", "ncores", "timelimit"]:  # Assuming these should be Int
+                            elif col_name in ["nhosts", "ncores", "timelimit"]:
                                 col_type = pl.Int64
-                            elif col_name in ["exitcode"]:  # Assuming exitcode might be int or string
-                                col_type = pl.Utf8  # Keep as string for flexibility
+                            elif col_name.startswith("value_"):
+                                col_type = pl.Float64
+                            else:
+                                col_type = pl.Utf8
 
                             cols_to_select.append(pl.lit(None, dtype=col_type).alias(col_name))
 
@@ -557,20 +501,20 @@ def efficient_job_processing(
                         batch_file,
                         compression="zstd",
                         compression_level=3,
-                        use_pyarrow=True,  # Often needed for datetime/nan handling
-                        statistics=True  # Write statistics for faster reads later
+                        use_pyarrow=True,
+                        statistics=True
                     )
                     logger.info(
                         f"Wrote final batch {batch_num} with {len(final_batch_df)} rows ({jobs_with_data_count} jobs had data) to {batch_file}")
                     all_batch_dirs.add(batch_dir)
                     total_rows_written += len(final_batch_df)
 
-                    # Memory management check (after writing results)
+                    # Memory management check
                     memory_percent = psutil.virtual_memory().percent
                     if memory_percent > MAX_MEMORY_PERCENT:
                         logger.warning(
                             f"High memory usage ({memory_percent}%) after writing batch {batch_num}. Triggering GC.")
-                        del final_batch_df  # Explicitly delete
+                        del final_batch_df
                         gc.collect()
                         logger.info(f"Memory usage after GC: {psutil.virtual_memory().percent:.1f}%")
 
@@ -579,10 +523,12 @@ def efficient_job_processing(
 
         batch_duration = time.time() - batch_start_time
         logger.info(f"--- Accounting Batch {batch_num} finished in {batch_duration:.2f}s ---")
-        # Explicit garbage collection between batches can sometimes help
+
+        # Cleanup between batches
         del batch_acc_df
         del batch_metrics_df
-        if batch_results: del final_batch_df
+        if batch_results:
+            del batch_results
         gc.collect()
 
     processing_duration = time.time() - processing_start_time
