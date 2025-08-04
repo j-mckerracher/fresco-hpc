@@ -1,0 +1,7 @@
+
+pyyaml
+watchdog
+pandas
+pyarrow
+beautifulsoup4
+requests
