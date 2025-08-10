@@ -1,0 +1,17 @@
+name: "FRESCO-web-front-end"
+path: "/mnt/c/Users/jmckerra/WebstormProjects/FRESCO-web-front-end"
+language: "typescript"
+
+# Enable logging for troubleshooting
+gui_log_window: false
+web_dashboard: true
+web_dashboard_open_on_launch: false
+
+# Optional: Enable read-only mode if you want to be cautious initially
+# read_only: true
+
+# Exclude any tools you don't want (optional)
+excluded_tools: []
+
+# Tool timeout
+tool_timeout: 240

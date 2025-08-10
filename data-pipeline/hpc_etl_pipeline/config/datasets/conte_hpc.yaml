@@ -1,0 +1,53 @@
+dataset:
+  name: "conte_hpc"
+  type: "hpc_cluster"
+  version: "1.0"
+
+source:
+  type: "remote_http"
+  base_url: "https://www.datadepot.rcac.purdue.edu/sbagchi/fresco/repository/Conte/TACC_Stats/"
+  file_patterns:
+    - "block.csv"
+    - "cpu.csv"
+    - "mem.csv"
+    - "llite.csv"
+  folder_pattern: "^\\d{4}-\\d{2}/?$"  # YYYY-MM format
+
+output:
+  format: "parquet"
+  compression: "snappy"
+  path_template: "FRESCO_{dataset_name}_ts_{folder_name}_v{version}_{timestamp}.parquet"
+  chunking:
+    enabled: true
+    max_size_gb: 2.0
+    min_rows_per_chunk: 500000
+
+transformations:
+  - type: "standardize_columns"
+    output_schema:
+      - "Job Id"
+      - "Host"
+      - "Event"
+      - "Value"
+      - "Units"
+      - "Timestamp"
+  
+  - type: "suffix_transform"
+    suffix: "_C"
+    columns: ["account", "queue", "host", "jid", "jobname", "host_list", "username"]
+    
+  - type: "job_id_normalization"
+    patterns:
+      - {find: "jobID", replace: "JOB"}
+      - {find: "job", replace: "JOB"}
+
+processing:
+  max_workers: 4
+  batch_size: 500000
+  memory_limit_gb: 80
+  temp_directory: "./temp"
+  
+validation:
+  required_columns: ["Job Id", "Host", "Event", "Value", "Units", "Timestamp"]
+  min_rows: 1
+  max_file_size_gb: 10
